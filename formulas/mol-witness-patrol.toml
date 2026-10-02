@@ -1,8 +1,7 @@
 description = """
-Witness patrol loop. Poured as a root-only wisp on startup:
+Witness patrol loop. Started or resumed as a root-only wisp:
 
-  gc bd mol wisp mol-witness-patrol --root-only
-  gc bd update $WISP --assignee=$GC_AGENT
+  "{{patrol_script}}" ensure mol-witness-patrol || exit $?
 
 Each wisp is ONE iteration: check for work, patrol, pour the next
 iteration. On crash, re-read the formula steps and determine where
@@ -56,9 +55,14 @@ the worktree. This makes the work schedulable again.
 
 Read each step's description before acting — Config values override defaults."""
 formula = "mol-witness-patrol"
-version = 10
+version = 11
+phase = "vapor"
 
 [vars]
+[vars.patrol_script]
+description = "Absolute pack helper path, supplied by assets/scripts/patrol.sh"
+required = true
+
 [vars.event_timeout]
 description = "Seconds to wait for events before re-checking (exponential backoff)"
 default = "30"
@@ -714,13 +718,12 @@ If context feels heavy or RSS is high:
 ```bash
 gc runtime request-restart
 ```
-This blocks forever. The controller restarts you. The next wisp
-is already assigned — the new session resumes from context.
+This blocks forever. The controller restarts you. The current root remains
+assigned — startup discovers it and the new session resumes from context.
 
 **2. Pour next iteration BEFORE burning:**
 ```bash
-NEXT=$(gc bd mol wisp mol-witness-patrol --root-only --json | jq -r '.new_epic_id')
-gc bd update "$NEXT" --assignee=$GC_AGENT
+NEXT=$("{{patrol_script}}" new mol-witness-patrol) || exit $?
 ```
 
 **3. Wait for activity (exponential backoff):**
@@ -735,7 +738,7 @@ On timeout: double the timeout (cap 300s) and proceed anyway.
 
 **4. Burn this wisp:**
 ```bash
-gc bd mol burn <this-wisp-id> --force
+"{{patrol_script}}" burn mol-witness-patrol "<this-wisp-id>" || exit $?
 ```
 
 The new wisp is ready. Re-read formula steps to start

@@ -64,11 +64,11 @@ gc bd list --assignee="$GC_ALIAS" --status=in_progress
 # Step 2: Nothing? Check mail for attached work
 gc mail inbox
 
-# Step 3: Still nothing? Create patrol wisp (root-only — no child step beads)
-NEW_WISP=$(gc bd mol wisp mol-deacon-patrol --root-only --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id')
-gc bd update "$NEW_WISP" --assignee="$GC_ALIAS"
+# Step 3: Reuse the graph-class patrol root, or create and assign one if absent
+NEW_WISP=$("{{ .ConfigDir }}/assets/scripts/patrol.sh" ensure mol-deacon-patrol --var "binding_prefix={{ .BindingPrefix }}") || exit $?
 
 # Step 4: Execute — read formula steps and work through them in order
+gc formula show mol-deacon-patrol --var "patrol_script={{ .ConfigDir }}/assets/scripts/patrol.sh" --var "binding_prefix={{ .BindingPrefix }}" || exit $?
 ```
 
 **Hook -> Read formula steps -> Follow in order -> pour next iteration.**
@@ -155,7 +155,7 @@ Individual stuck agents don't need escalation — the warrant system handles the
 
 | Want to... | Correct command |
 |------------|----------------|
-| Pour next wisp | `gc bd mol wisp mol-deacon-patrol --root-only --var binding_prefix={{ .BindingPrefix }}` |
+| Pour next wisp | `"{{ .ConfigDir }}/assets/scripts/patrol.sh" new mol-deacon-patrol --var "binding_prefix={{ .BindingPrefix }}"` |
 | Context exhaustion | `gc runtime request-restart` |
 | Request target restart | `gc session kill <target>` |
 | Check gates | `gc bd gate check --type=timer --escalate` |

@@ -1,8 +1,7 @@
 description = """
-Refinery patrol loop. Poured as a root-only wisp on startup:
+Refinery patrol loop. Started or resumed as a root-only wisp:
 
-  gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}}
-  gc bd update $WISP --assignee=$GC_AGENT
+  "{{patrol_script}}" ensure mol-refinery-patrol --var "target_branch={{target_branch}}" --var "rig_name={{rig_name}}" --var "binding_prefix={{binding_prefix}}" || exit $?
 
 Each wisp is ONE iteration: check for work, merge one branch, pour
 the next iteration. On crash, re-read the formula steps and determine
@@ -29,10 +28,15 @@ closes the bead once the PR is verified.
 
 Read each step's description before acting — Config values override defaults."""
 formula = "mol-refinery-patrol"
-version = 4
+version = 5
 contract = "graph.v2"
+phase = "vapor"
 
 [vars]
+[vars.patrol_script]
+description = "Absolute pack helper path, supplied by assets/scripts/patrol.sh"
+required = true
+
 [vars.run_tests]
 description = "Whether to run tests before merging"
 default = "true"
@@ -215,10 +219,9 @@ gc bd update $WORK \
 5. Clean up temp branch: `git checkout {{target_branch}} && git branch -D temp`
 6. Pour next patrol iteration before burning:
 ```bash
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id')
-gc bd update "$NEXT" --assignee=$GC_AGENT
+NEXT=$("{{patrol_script}}" new mol-refinery-patrol --var "target_branch={{target_branch}}" --var "rig_name={{rig_name}}" --var "binding_prefix={{binding_prefix}}") || exit $?
 ```
-7. Burn this wisp: `gc bd mol burn <wisp-id> --force`
+7. Burn this wisp: `"{{patrol_script}}" burn mol-refinery-patrol "<wisp-id>" || exit $?`
 
 **A new polecat will pick up the bead, see the branch and rejection,
 rebase, and reassign to refinery.**"""
@@ -296,10 +299,9 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
    - Clean up: `git checkout "$TARGET" && git branch -D temp`
    - Pour next patrol iteration before burning:
      ```bash
-     NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id')
-     gc bd update "$NEXT" --assignee=$GC_AGENT
+     NEXT=$("{{patrol_script}}" new mol-refinery-patrol --var "target_branch={{target_branch}}" --var "rig_name={{rig_name}}" --var "binding_prefix={{binding_prefix}}") || exit $?
      ```
-   - Burn this wisp: `gc bd mol burn <wisp-id> --force`
+   - Burn this wisp: `"{{patrol_script}}" burn mol-refinery-patrol "<wisp-id>" || exit $?`
 
 3. If pre-existing on target:
    - Check for duplicates first:
@@ -351,14 +353,13 @@ Work bead: $WORK
 Existing PR: $EXISTING_PR
 Branch: $BRANCH
 Target: $TARGET"
-  NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id')
-  gc bd update "$NEXT" --assignee=$GC_AGENT
   CURRENT_WISP=${GC_BEAD_ID:-}
-  if [ -n "$CURRENT_WISP" ]; then
-    gc bd mol burn "$CURRENT_WISP" --force
-  else
-    echo "Could not infer current wisp; burn this wisp manually after recording the summary."
+  if [ -z "$CURRENT_WISP" ]; then
+    echo "Could not infer the current patrol root; stop and inspect before retrying." >&2
+    exit 1
   fi
+  NEXT=$("{{patrol_script}}" new mol-refinery-patrol --var "target_branch={{target_branch}}" --var "rig_name={{rig_name}}" --var "binding_prefix={{binding_prefix}}") || exit $?
+  "{{patrol_script}}" burn mol-refinery-patrol "$CURRENT_WISP" || exit $?
   echo "$reason"
   echo "STOP. Existing PR metadata needs human correction."
   gc runtime drain-ack
@@ -654,13 +655,12 @@ If auto_land = "false": skip this entirely.
 
 **2. Pour next iteration:**
 ```bash
-NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id')
-gc bd update "$NEXT" --assignee=$GC_AGENT
+NEXT=$("{{patrol_script}}" new mol-refinery-patrol --var "target_branch={{target_branch}}" --var "rig_name={{rig_name}}" --var "binding_prefix={{binding_prefix}}") || exit $?
 ```
 
 **4. Burn this wisp:**
 ```bash
-gc bd mol burn <this-wisp-id> --force
+"{{patrol_script}}" burn mol-refinery-patrol "<this-wisp-id>" || exit $?
 ```
 
-Close this step. The new wisp is ready — re-read formula steps to begin."""
+The new wisp is ready — re-read formula steps to begin."""
