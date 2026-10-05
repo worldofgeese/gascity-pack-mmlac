@@ -29,13 +29,17 @@ These patrols require Bash, jq, and a Gas City build providing:
 
 - `gc formula cook --json`
 - `gc wisp list --formula ... --assignee ... --json`
+- `gc wisp assign <root-id> --formula ... --assignee ...`
 - `gc wisp burn <root-id> --formula ... --assignee ... --force`
 - Atomic isolated deletion in the selected graph-class store (SQLite or file)
 
-Standalone cooks, restart lookup, and retirement use the graph-class
+Standalone cooks, assignment, restart lookup, and retirement use the graph-class
 destination. Configure the city's graph storage binding when coordination
 graphs must be separate from work. Ordinary work listing and shared-work
 eligibility are unchanged.
+
+Assignment checks the root revision and refuses another execution's assignment.
+It does not go through the generic `gc bd` work-store command.
 
 The graph binding must support checking isolation and deleting the root in
 one transaction or lock. A `bd`-only graph binding does not provide that
@@ -82,3 +86,16 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_patrol_l
 shellcheck assets/scripts/patrol.sh
 bash -n assets/scripts/patrol.sh
 ```
+
+Check the actual helper-to-CLI boundary with a matching native `gc` build:
+
+```bash
+python3 tests/patrol_native.py --gc /absolute/path/to/gc
+```
+
+This runs all three formulas against disposable file and split-SQLite cities:
+creation, restart reuse, next iteration, ambiguous-root and wrong-execution
+refusal, exact retirement, and an unchanged unrelated work record. It supplies
+isolated home/config directories, excludes `bd` and credentials, launches no
+agents or supervisor, and removes its temporary cities on exit. Run it in a
+network-disabled container for an additional isolation boundary.

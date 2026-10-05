@@ -57,7 +57,9 @@ def finish(operation, default):
     print(state.get(operation + "_output", default))
     code = state.get(operation + "_code", 0)
     if code:
-        print("stub " + operation + " failed", file=sys.stderr)
+        diagnostic = state.get(operation + "_stderr", "stub " + operation + " failed")
+        if diagnostic:
+            print(diagnostic, file=sys.stderr)
     raise SystemExit(code)
 
 if args[:2] == ["wisp", "list"]:
@@ -69,15 +71,18 @@ if args[:2] == ["formula", "cook"]:
     state["last_formula"] = args[2]
     finish("cook", json.dumps({"schema_version": "1", "ok": True,
                                "root_id": "gcg-" + str(state["cooks"])}))
-if args[:2] == ["bd", "update"]:
-    if args[2].startswith("work-"):
-        finish("work_update", "Updated work")
-    if not state.get("update_code", 0):
+if args[:2] == ["bd", "update"] and args[2].startswith("work-"):
+    finish("work_update", "Updated work")
+if args[:2] == ["wisp", "assign"]:
+    if flag("--formula") != state["last_formula"]:
+        print("stub refused wrong assignment formula", file=sys.stderr)
+        raise SystemExit(79)
+    if not state.get("assign_code", 0):
         state["roots"].append({"id": args[2], "assignee": flag("--assignee"),
                               "ref": state["last_formula"],
                               "metadata": {"gc.kind": "wisp",
                                            "gc.formula_name": state["last_formula"]}})
-    finish("update", "Updated root")
+    finish("assign", "Assigned root")
 if args[:2] == ["wisp", "burn"]:
     if not state.get("burn_code", 0):
         matches = [row for row in state["roots"] if row["id"] == args[2]
@@ -149,14 +154,15 @@ class PatrolLifecycleTests(unittest.TestCase):
                 calls = self.recorded()
                 self.assertEqual([call[:2] for call in calls],
                                  [["wisp", "list"], ["formula", "cook"],
-                                  ["bd", "update"], ["wisp", "list"]])
+                                  ["wisp", "assign"], ["wisp", "list"]])
                 self.assertIn(f"--formula={formula}", calls[0])
                 self.assertIn("--assignee=seat-1", calls[0])
                 self.assertIn("--json", calls[0])
                 self.assertEqual(calls[1][2], formula)
                 self.assertIn("--json", calls[1])
                 self.assertIn(f"patrol_script={HELPER}", calls[1])
-                self.assertEqual(calls[2], ["bd", "update", "gcg-1", "--assignee=seat-1"])
+                self.assertEqual(calls[2], ["wisp", "assign", "gcg-1",
+                                           f"--formula={formula}", "--assignee=seat-1"])
 
     def test_next_iteration_does_not_reuse_current(self):
         self.reset(roots=[root_record()])
@@ -164,8 +170,18 @@ class PatrolLifecycleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "gcg-1\n")
         self.assertEqual([call[:2] for call in self.recorded()],
-                         [["formula", "cook"], ["bd", "update"]])
+                         [["formula", "cook"], ["wisp", "assign"]])
         self.assertEqual(len(json.loads(self.state.read_text())["roots"]), 2)
+
+    def test_lookup_reuses_batch_root_without_ref(self):
+        root = root_record()
+        del root["ref"]
+        root["metadata"]["gc.step_id"] = FORMULAS[0]
+        self.reset(list_output=json.dumps(success(roots=[root])))
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "gcg-current\n")
+        self.assertEqual([call[:2] for call in self.recorded()], [["wisp", "list"]])
 
     def test_foreign_execution_or_formula_is_not_reused(self):
         foreign = [root_record("gcg-other", assignee="seat-2"),
@@ -207,15 +223,31 @@ class PatrolLifecycleTests(unittest.TestCase):
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertEqual(result.stdout, "")
                 self.assertIn(f"stub {operation} failed", result.stderr)
-                self.assertFalse(any(call[:2] == ["bd", "update"] for call in self.recorded()))
+                self.assertFalse(any(call[:2] == ["wisp", "assign"] for call in self.recorded()))
+                self.assert_no_retirement()
+
+    def test_failed_lookup_and_cook_surface_json_stdout_errors(self):
+        for operation, code in (("list", 17), ("cook", 47)):
+            with self.subTest(operation=operation):
+                error = json.dumps({
+                    "schema_version": "1", "ok": False,
+                    "error": {"code": "command_failed", "message": "graph store unavailable"},
+                })
+                self.reset(**{f"{operation}_code": code, f"{operation}_output": error,
+                              f"{operation}_stderr": ""})
+                result = self.run_helper()
+                self.assertEqual(result.returncode, code)
+                self.assertEqual(result.stdout, "")
+                self.assertIn(error, result.stderr)
+                self.assertFalse(any(call[:2] == ["wisp", "assign"] for call in self.recorded()))
                 self.assert_no_retirement()
 
     def test_failed_assignment_keeps_exit_status(self):
-        self.reset(update_code=29)
+        self.reset(assign_code=29)
         result = self.run_helper("new")
         self.assertEqual(result.returncode, 29, result.stderr)
         self.assertEqual(result.stdout, "")
-        self.assertIn("stub update failed", result.stderr)
+        self.assertIn("stub assign failed", result.stderr)
         self.assert_no_retirement()
 
     def test_cook_rejects_malformed_or_missing_root_ids(self):
@@ -245,6 +277,11 @@ class PatrolLifecycleTests(unittest.TestCase):
                        for value in (None, "", 7, "gcg-1\n", "--all"))
         outputs.extend((json.dumps(success(roots=[root_record(assignee="seat-2")])),
                         json.dumps(success(roots=[root_record(formula=FORMULAS[1])]))))
+        for ref, step in ((FORMULAS[1], FORMULAS[0]), (FORMULAS[0], "child-step"), ("", "")):
+            root = root_record()
+            root["ref"] = ref
+            root["metadata"]["gc.step_id"] = step
+            outputs.append(json.dumps(success(roots=[root])))
         for output in outputs:
             with self.subTest(output=output):
                 self.reset(list_output=output)
@@ -298,7 +335,7 @@ class PatrolLifecycleTests(unittest.TestCase):
                                              path.read_text(), re.MULTILINE)]
         self.assertEqual(len(captures), 9)
         for path, capture in captures:
-            for failure in ({"cook_code": 47}, {"cook_output": "{}"}, {"update_code": 29}):
+            for failure in ({"cook_code": 47}, {"cook_output": "{}"}, {"assign_code": 29}):
                 with self.subTest(path=path.relative_to(PACK), capture=capture, failure=failure):
                     self.reset(**failure)
                     script = self.render(capture) + "\ngc runtime drain-ack\n"
@@ -323,7 +360,7 @@ class PatrolLifecycleTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, "Burned root\ngcg-1\n")
                 self.assertEqual([call[:2] for call in self.recorded()],
-                                 [["formula", "cook"], ["bd", "update"], ["wisp", "burn"]])
+                                 [["formula", "cook"], ["wisp", "assign"], ["wisp", "burn"]])
                 self.assertEqual(json.loads(self.state.read_text())["roots"],
                                  [root_record("gcg-1", formula=formula)])
 
@@ -339,7 +376,7 @@ class PatrolLifecycleTests(unittest.TestCase):
             TARGET=main
         """) + self.render(function.group(0)) + '\nblock_existing_pr "invalid handoff"\n'
         for failure in ({"cook_code": 47}, {"cook_output": "{}"},
-                        {"update_code": 29}, {"burn_code": 38}):
+                        {"assign_code": 29}, {"burn_code": 38}):
             with self.subTest(failure=failure):
                 self.reset(roots=[root_record(formula=FORMULAS[2])], **failure)
                 result = subprocess.run(["bash", "-c", script], cwd=self.root, env=self.env,

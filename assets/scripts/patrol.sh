@@ -6,6 +6,17 @@ fail() {
   exit 1
 }
 
+capture_gc() {
+  local output status
+  output=$(gc "$@") || {
+    status=$?
+    printf 'patrol: gc %s failed (exit %s)\n' "$1" "$status" >&2
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    return "$status"
+  }
+  printf '%s' "$output"
+}
+
 parse_result() {
   local status
   jq -ers --arg mode "$1" --arg formula "$2" --arg assignee "$3" '
@@ -20,8 +31,13 @@ parse_result() {
         elif (.roots | length) > 1 then error("multiple patrol roots; inspect before retrying")
         elif (.roots | length) == 0 then ""
         else .roots[0]
-          | if .assignee == $assignee and .ref == $formula
+          | (.ref // "") as $ref
+          | (.metadata["gc.step_id"] // "") as $step
+          | if .assignee == $assignee
                and .metadata["gc.formula_name"] == $formula
+               and ($ref == "" or $ref == $formula)
+               and ($step == "" or $step == $formula)
+               and ($ref == $formula or $step == $formula)
             then .id | root_id else error("lookup returned another formula or execution") end
         end
       else .root_id | root_id end
@@ -60,7 +76,7 @@ main() {
   done
 
   if [[ "$mode" == ensure ]]; then
-    output=$(gc wisp list --formula="$formula" --assignee="$assignee" --json) || return $?
+    output=$(capture_gc wisp list --formula="$formula" --assignee="$assignee" --json) || return $?
     root=$(printf '%s' "$output" | parse_result list "$formula" "$assignee") || return $?
     if [[ -n "$root" ]]; then
       printf '%s\n' "$root"
@@ -71,9 +87,9 @@ main() {
   script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return $?
   vars+=(--var "patrol_script=$script_dir/patrol.sh")
   # Capture first: a parser must never mask a failed cook's exit status.
-  output=$(gc formula cook "$formula" "${vars[@]}" --json) || return $?
+  output=$(capture_gc formula cook "$formula" "${vars[@]}" --json) || return $?
   root=$(printf '%s' "$output" | parse_result cook "$formula" "$assignee") || return $?
-  gc bd update "$root" --assignee="$assignee" >&2 || return $?
+  gc wisp assign "$root" --formula="$formula" --assignee="$assignee" >&2 || return $?
   printf '%s\n' "$root"
 }
 
